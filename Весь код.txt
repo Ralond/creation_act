@@ -1,0 +1,655 @@
+import sys
+import tkinter as tk
+from tkinter import ttk, messagebox
+from pathlib import Path
+from tkinter import filedialog
+from modules.act_processor import ActProcessor
+from modules.file_manager import FileManager
+from config import DEFAULT_TEMPLATE, DEFAULT_SOURCE, DEFAULT_REGISTER, OUTPUT_DIR
+
+class AktGeneratorGUI:
+    def __init__(self, root):
+        self.root = root
+        self.processor = ActProcessor()
+        self.file_manager = FileManager()
+        self.setup_ui()
+        
+        # Переменные состояния
+        self.valid_rows = []
+        self.current_output_dir = OUTPUT_DIR
+
+    def setup_ui(self):
+        """Настройка графического интерфейса"""
+        self.root.title("Генератор актов скрытых работ")
+        self.root.geometry("900x700")
+        
+        # Основные фреймы
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Панель управления
+        control_frame = ttk.LabelFrame(main_frame, text="Управление", padding="10")
+        control_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Button(control_frame, 
+                 text="Загрузить реестр", 
+                 command=self.load_register).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(control_frame,
+                 text="Сгенерировать акты",
+                 command=self.generate_akts).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(control_frame,
+                 text="Выбрать папку для сохранения",
+                 command=self.select_output_dir).pack(side=tk.LEFT, padx=5)
+        
+        # Лог выполнения
+        self.log_frame = ttk.LabelFrame(main_frame, text="Лог выполнения", padding="10")
+        self.log_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.log_text = tk.Text(self.log_frame, wrap=tk.WORD, state='disabled')
+        scrollbar = ttk.Scrollbar(self.log_frame, command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=scrollbar.set)
+        
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.pack(fill=tk.BOTH, expand=True)
+        
+        # Статус бар
+        self.status_var = tk.StringVar(value="Готов к работе")
+        ttk.Label(main_frame, textvariable=self.status_var).pack(side=tk.BOTTOM, fill=tk.X)
+
+    def log_message(self, message):
+        """Вывод сообщения в лог"""
+        self.log_text.config(state='normal')
+        self.log_text.insert(tk.END, message + "\n")
+        self.log_text.config(state='disabled')
+        self.log_text.see(tk.END)
+        self.root.update()
+
+    def load_register(self):
+        """Загрузка файла реестра"""
+        try:
+            self.log_message("\nЗагрузка реестра...")
+            self.valid_rows = self.processor.process_register(DEFAULT_REGISTER)
+            
+            if not self.valid_rows:
+                messagebox.showwarning("Внимание", "Реестр не содержит данных для обработки")
+                return
+            
+            self.log_message(f"Успешно загружено {len(self.valid_rows)} актов для обработки")
+            self.status_var.set(f"Готово к генерации: {len(self.valid_rows)} актов")
+            
+        except Exception as e:
+            self.log_message(f"Ошибка загрузки реестра: {str(e)}")
+            messagebox.showerror("Ошибка", f"Не удалось загрузить реестр:\n{str(e)}")
+
+    def select_output_dir(self):
+        """Выбор папки для сохранения результатов"""
+        dir_path = filedialog.askdirectory(initialdir=self.current_output_dir)
+        if dir_path:
+            self.current_output_dir = Path(dir_path)
+            self.log_message(f"Папка для сохранения изменена на: {self.current_output_dir}")
+
+    def generate_akts(self):
+        """Основная функция генерации актов"""
+        if not self.valid_rows:
+            messagebox.showwarning("Внимание", "Сначала загрузите реестр актов")
+            return
+        
+        success_count = 0
+        self.log_message("\nНачало генерации актов...")
+        
+        for i, row in enumerate(self.valid_rows, 1):
+            akt_num = f"{self.file_manager.safe_get(row, 0, '')}{self.file_manager.safe_get(row, 1, '')}"
+            self.log_message(f"\nОбработка акта {i}/{len(self.valid_rows)}: {akt_num}")
+            
+            result = self.processor.generate_akt(
+                row=row,
+                template_path=DEFAULT_TEMPLATE,
+                source_path=DEFAULT_SOURCE,
+                output_dir=self.current_output_dir
+            )
+            
+            if result['status'] == 'success':
+                success_count += 1
+                self.log_message(f"Успешно создан: {result['file']}")
+            else:
+                self.log_message(f"Ошибка: {result['error']}")
+        
+        self.log_message("\n" + "="*50)
+        self.log_message(f"ГЕНЕРАЦИЯ ЗАВЕРШЕНА\nУспешно создано: {success_count}/{len(self.valid_rows)}")
+        self.status_var.set(f"Готово. Успешно создано {success_count} актов")
+        
+        messagebox.showinfo("Завершено", 
+                          f"Обработка завершена.\nУспешно создано актов: {success_count}/{len(self.valid_rows)}")
+
+def main():
+    try:
+        # Создаем папку для результатов если ее нет
+        OUTPUT_DIR.mkdir(exist_ok=True)
+        
+        # Создаем и запускаем GUI
+        root = tk.Tk()
+        app = AktGeneratorGUI(root)
+        root.mainloop()
+        
+    except Exception as e:
+        print(f"Критическая ошибка: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+
+import os
+from pathlib import Path
+
+# Базовые пути
+BASE_DIR = Path(__file__).parent
+DATA_DIR = BASE_DIR / 'data'
+OUTPUT_DIR = BASE_DIR / 'output'
+
+# Создаем папки если их нет
+DATA_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR.mkdir(exist_ok=True)
+
+# Настройки Excel
+DEFAULT_TEMPLATE = DATA_DIR / 'Шаблон.xlsx'
+DEFAULT_SOURCE = DATA_DIR / 'Исходные.xlsx'
+DEFAULT_REGISTER = DATA_DIR / 'Реестр.xlsx'
+
+# Форматы сертификатов
+CERTIFICATE_EXTENSIONS = ('.pdf', '.jpg', '.jpeg', '.png')
+
+# Проверка существования файлов
+REQUIRED_FILES = {
+    'template': DEFAULT_TEMPLATE,
+    'source': DEFAULT_SOURCE,
+    'register': DEFAULT_REGISTER
+}
+
+for name, path in REQUIRED_FILES.items():
+    if not path.exists():
+        raise FileNotFoundError(f"Не найден обязательный файл: {path}")
+
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from pathlib import Path
+from modules.act_processor import ActProcessor
+from modules.file_manager import FileManager
+from config import DEFAULT_REGISTER, OUTPUT_DIR
+
+class AktGeneratorGUI:
+    def __init__(self, root):
+        self.root = root
+        self.processor = ActProcessor()
+        self.file_manager = FileManager()
+        self.setup_ui()
+        self.current_akt = None
+        
+    def setup_ui(self):
+        """Настройка интерфейса"""
+        self.root.title("Генератор актов")
+        self.root.geometry("900x700")
+        
+        # Основные фреймы
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Панель управления
+        control_frame = ttk.LabelFrame(main_frame, text="Управление", padding="10")
+        control_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Button(control_frame, text="Выбрать реестр", command=self.select_register).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="Сгенерировать акты", command=self.generate_akts).pack(side=tk.LEFT, padx=5)
+        
+        # Панель сертификатов
+        cert_frame = ttk.LabelFrame(main_frame, text="Добавление сертификатов", padding="10")
+        cert_frame.pack(fill=tk.X, pady=5)
+        
+        self.akt_combobox = ttk.Combobox(cert_frame, state='readonly')
+        self.akt_combobox.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        
+        ttk.Button(cert_frame, text="Добавить сертификат", command=self.add_certificate).pack(side=tk.LEFT, padx=5)
+        
+        # Лог действий
+        log_frame = ttk.LabelFrame(main_frame, text="Лог выполнения", padding="10")
+        log_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.log_text = tk.Text(log_frame, wrap=tk.WORD, state='disabled')
+        scrollbar = ttk.Scrollbar(log_frame, command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=scrollbar.set)
+        
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.pack(fill=tk.BOTH, expand=True)
+        
+        # Статус бар
+        self.status_var = tk.StringVar(value="Готов к работе")
+        ttk.Label(main_frame, textvariable=self.status_var).pack(side=tk.BOTTOM, fill=tk.X)
+    
+    def log_message(self, message):
+        """Вывод сообщения в лог"""
+        self.log_text.config(state='normal')
+        self.log_text.insert(tk.END, message + "\n")
+        self.log_text.config(state='disabled')
+        self.log_text.see(tk.END)
+        self.root.update()
+    
+    def select_register(self):
+        """Выбор файла реестра"""
+        filepath = filedialog.askopenfilename(
+            initialfile=DEFAULT_REGISTER,
+            filetypes=[("Excel files", "*.xlsx")]
+        )
+        if filepath:
+            self.log_message(f"Выбран реестр: {filepath}")
+            self.register_path = Path(filepath)
+    
+    def generate_akts(self):
+        """Генерация всех актов"""
+        try:
+            if not hasattr(self, 'register_path'):
+                messagebox.showwarning("Внимание", "Сначала выберите файл реестра!")
+                return
+                
+            self.log_message("\nНачало обработки реестра...")
+            rows = self.processor.process_register(self.register_path)
+            
+            if not rows:
+                messagebox.showinfo("Информация", "Нет данных для обработки в реестре")
+                return
+                
+            self.log_message(f"Найдено актов для обработки: {len(rows)}")
+            
+            # Обновляем комбобокс
+            akt_numbers = [f"{self.file_manager.safe_get(row, 0, '')}{self.file_manager.safe_get(row, 1, '')}" for row in rows]
+            self.akt_combobox['values'] = akt_numbers
+            
+            self.log_message("\nГенерация актов завершена успешно!")
+            messagebox.showinfo("Успех", f"Сгенерировано {len(rows)} актов")
+            
+        except Exception as e:
+            self.log_message(f"\nОшибка: {str(e)}")
+            messagebox.showerror("Ошибка", str(e))
+    
+    def add_certificate(self):
+        """Добавление сертификата к акту"""
+        akt_num = self.akt_combobox.get()
+        if not akt_num:
+            messagebox.showwarning("Внимание", "Сначала выберите акт!")
+            return
+            
+        filepath = filedialog.askopenfilename(
+            title=f"Выберите сертификат для акта {akt_num}",
+            filetypes=[("PDF/Изображения", "*.pdf *.jpg *.jpeg *.png")]
+        )
+        
+        if filepath:
+            filepath = Path(filepath)
+            if self.file_manager.validate_certificate(filepath):
+                # Здесь логика добавления сертификата
+                self.log_message(f"Добавлен сертификат: {filepath.name} к акту {akt_num}")
+            else:
+                messagebox.showerror("Ошибка", "Неподдерживаемый формат файла!")
+
+from datetime import datetime
+from pathlib import Path
+import openpyxl
+import time
+from copy import copy
+from openpyxl.utils import get_column_letter
+from config import OUTPUT_DIR, CERTIFICATE_EXTENSIONS
+
+class FileManager:
+    @staticmethod
+    def safe_get(sequence, index, default=None):
+        """Безопасное получение элемента"""
+        try:
+            if isinstance(sequence, (list, tuple)) and index < len(sequence):
+                return sequence[index] if sequence[index] is not None else default
+            return default
+        except Exception:
+            return default
+
+    @staticmethod
+    def load_workbook_safe(path, max_attempts=3):
+        """Загрузка Excel файла с повторами"""
+        for attempt in range(max_attempts):
+            try:
+                if not Path(path).exists():
+                    raise FileNotFoundError(f"Файл не найден: {path}")
+                return openpyxl.load_workbook(path, data_only=True)
+            except Exception as e:
+                print(f"Ошибка загрузки (попытка {attempt+1}): {e}")
+                if attempt == max_attempts - 1:
+                    raise
+                time.sleep(1)
+
+    @staticmethod
+    def create_akt_folder(akt_num):
+        """Создает папку для акта"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        folder_name = f"Акт_{akt_num}_{timestamp}"
+        folder_path = OUTPUT_DIR / folder_name
+        folder_path.mkdir(parents=True, exist_ok=True)
+        return folder_path
+
+    @staticmethod
+    def save_workbook_safe(wb, filepath, max_attempts=3):
+        """Безопасное сохранение файла"""
+        temp_path = filepath.with_name(f"temp_{filepath.name}")
+        
+        for attempt in range(max_attempts):
+            try:
+                wb.save(temp_path)
+                if filepath.exists():
+                    filepath.unlink()
+                temp_path.rename(filepath)
+                return True
+            except Exception as e:
+                print(f"Ошибка сохранения (попытка {attempt+1}): {e}")
+                time.sleep(1)
+        return False
+
+    @staticmethod
+    def validate_certificate(filepath):
+        """Проверка формата сертификата"""
+        return filepath.suffix.lower() in CERTIFICATE_EXTENSIONS
+
+import os
+from datetime import datetime
+import openpyxl
+from openpyxl.utils import get_column_letter
+from copy import copy
+from modules.file_manager import FileManager
+from config import DEFAULT_TEMPLATE, DEFAULT_SOURCE, DEFAULT_REGISTER
+
+class ActProcessor:
+    def __init__(self):
+        self.file_manager = FileManager()
+
+    def validate_row(self, row):
+        """Проверка валидности строки реестра"""
+        if not isinstance(row, (list, tuple)):
+            return False
+        
+        if all(cell is None for cell in row):
+            return False
+        
+        if len(row) < 7:
+            return False
+        
+        if not (row[1] and row[6] and isinstance(row[6], datetime)):
+            return False
+        
+        return True
+
+    def process_register(self, register_path):
+        """Обработка реестра актов"""
+        wb = self.file_manager.load_workbook_safe(register_path)
+        sheet = wb['Реестр']
+        
+        valid_rows = []
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            if self.validate_row(row):
+                valid_rows.append(row)
+            elif any(cell is not None for cell in row):
+                break  # Прекращаем при первой частично заполненной строке
+                
+        wb.close()
+        return valid_rows
+
+    def generate_akt(self, row, template_path, source_path, output_dir):
+        """Генерация одного акта с полной логикой"""
+        akt_num = f"{self.file_manager.safe_get(row, 0, '')}{self.file_manager.safe_get(row, 1, '')}"
+        akt_date = self.file_manager.safe_get(row, 6)
+        
+        # Создаем папку и файл для акта
+        akt_folder = self.file_manager.create_akt_folder(akt_num)
+        akt_file = akt_folder / f"Акт_{akt_num}.xlsx"
+        
+        try:
+            if not akt_date:
+                raise ValueError("Дата акта не указана")
+
+            # Загружаем необходимые данные
+            wb_source = self.file_manager.load_workbook_safe(source_path)
+            wb_template = self.file_manager.load_workbook_safe(template_path)
+            
+            source_sheet = wb_source['Реквизиты']
+            involved_sheet = wb_source['Причастные']
+            template_sheet = wb_template['1']
+            
+            # Создаем новую книгу для акта
+            output_wb = openpyxl.Workbook()
+            output_wb.remove(output_wb.active)
+            
+            # Создаем лист для акта
+            sheet_name = f"Акт {akt_num}"[:31]
+            new_sheet = output_wb.create_sheet(title=sheet_name)
+            
+            # Копируем шаблон
+            self._copy_template(template_sheet, new_sheet)
+            
+            # Получаем данные о лицах
+            persons = self._get_persons_data(involved_sheet, akt_date)
+            
+            # Заполняем основные данные
+            self._fill_main_data(new_sheet, row, persons)
+            
+            # Заполняем информацию о проекте
+            project_info = self._format_project_info(row)
+            if project_info:
+                self._write_to_cell(new_sheet, 'R52', project_info)
+            
+            # Сохраняем файл акта
+            self.file_manager.save_workbook_safe(output_wb, akt_file)
+            
+            return {
+                'folder': akt_folder,
+                'file': akt_file,
+                'akt_num': akt_num,
+                'akt_date': akt_date.strftime('%d.%m.%Y'),
+                'status': 'success'
+            }
+            
+        except Exception as e:
+            return {
+                'folder': akt_folder,
+                'file': akt_file,
+                'akt_num': akt_num,
+                'error': str(e),
+                'status': 'error'
+            }
+        finally:
+            # Закрываем workbook если они были открыты
+            if 'wb_source' in locals():
+                wb_source.close()
+            if 'wb_template' in locals():
+                wb_template.close()
+            if 'output_wb' in locals():
+                output_wb.close()
+
+    def _copy_template(self, template_sheet, new_sheet):
+        """Копирование шаблона с сохранением стилей"""
+        # Копируем объединенные ячейки
+        for merged_range in template_sheet.merged_cells.ranges:
+            new_sheet.merge_cells(str(merged_range))
+        
+        # Копируем размеры столбцов
+        for col in template_sheet.columns:
+            col_letter = get_column_letter(col[0].column)
+            if col_letter in template_sheet.column_dimensions:
+                new_sheet.column_dimensions[col_letter].width = template_sheet.column_dimensions[col_letter].width
+        
+        # Копируем высоты строк
+        for row_idx, row_dim in template_sheet.row_dimensions.items():
+            new_sheet.row_dimensions[row_idx].height = row_dim.height
+        
+        # Копируем ячейки с сохранением стилей
+        for row in template_sheet.iter_rows():
+            for cell in row:
+                if isinstance(cell, openpyxl.cell.cell.MergedCell):
+                    continue
+                    
+                new_cell = new_sheet[cell.coordinate]
+                new_cell.value = cell.value
+                
+                if cell.has_style:
+                    new_cell.font = copy(cell.font)
+                    new_cell.border = copy(cell.border)
+                    new_cell.fill = copy(cell.fill)
+                    new_cell.number_format = cell.number_format
+                    new_cell.protection = copy(cell.protection)
+                    new_cell.alignment = copy(cell.alignment)
+
+    def _get_persons_data(self, involved_sheet, akt_date):
+        """Получение данных о причастных лицах"""
+        return {
+            'client_tech_supervision': self._get_most_recent_person(involved_sheet, akt_date, 4, 13),
+            'general_contractor': self._get_most_recent_person(involved_sheet, akt_date, 15, 24),
+            'contractor_tech_supervision': self._get_most_recent_person(involved_sheet, akt_date, 26, 35),
+            'author_supervision': self._get_most_recent_person(involved_sheet, akt_date, 37, 46),
+            'work_executor': self._get_most_recent_person(involved_sheet, akt_date, 59, 68),
+            'others': self._get_most_recent_person(involved_sheet, akt_date, 70, 79)
+        }
+
+    def _get_most_recent_person(self, sheet, akt_date, start_row, end_row):
+        """Поиск актуальных данных на дату акта"""
+        most_recent_data = {}
+        most_recent_date = None
+        
+        for row_num in range(start_row, end_row + 1):
+            try:
+                order_date = sheet.cell(row=row_num, column=1).value
+                if not order_date or not isinstance(order_date, datetime):
+                    continue
+                    
+                if order_date <= akt_date:
+                    if most_recent_date is None or order_date > most_recent_date:
+                        most_recent_data = {
+                            'name': sheet.cell(row=row_num, column=6).value,
+                            'position': sheet.cell(row=row_num, column=2).value,
+                            'organization': sheet.cell(row=row_num, column=3).value,
+                            'order': sheet.cell(row=row_num, column=4).value,
+                            'nrs': sheet.cell(row=row_num, column=5).value,
+                            'address': sheet.cell(row=row_num, column=7).value
+                        }
+                        most_recent_date = order_date
+            except Exception:
+                continue
+        
+        return most_recent_data
+
+    def _fill_main_data(self, sheet, row, persons):
+        """Заполнение основных данных акта"""
+        # Основные данные
+        mapping = {
+            'B26': f"{self.file_manager.safe_get(row, 0, '')}{self.file_manager.safe_get(row, 1, '')}",
+            'AB26': self.file_manager.safe_get(row, 6),
+            'A50': self.file_manager.safe_get(row, 2, ''),
+            'M61': self.file_manager.safe_get(row, 4, ''),
+            'M62': self.file_manager.safe_get(row, 5, ''),
+            'A67': self.file_manager.safe_get(row, 7, ''),
+            'A56': self.file_manager.safe_get(row, 8, ''),
+            'A59': self.file_manager.safe_get(row, 9, ''),
+            'G70': self.file_manager.safe_get(row, 13, ''),
+            'J69': self.file_manager.safe_get(row, 14, ''),
+            'A72': self._format_attachments(row)
+        }
+        
+        for coord, value in mapping.items():
+            self._write_to_cell(sheet, coord, value)
+        
+        # Данные о лицах (верхняя часть)
+        upper_mapping = {
+            'A28': self._format_person_details(persons.get('client_tech_supervision', {}), True),
+            'A31': self._format_person_details(persons.get('general_contractor', {})),
+            'A34': self._format_person_details(persons.get('contractor_tech_supervision', {})),
+            'A37': self._format_person_details(persons.get('author_supervision', {})),
+            'A40': self._format_person_details(persons.get('work_executor', {})),
+            'A43': self._format_person_details(persons.get('others', {}))
+        }
+        
+        for coord, value in upper_mapping.items():
+            if value:
+                self._write_to_cell(sheet, coord, value)
+        
+        # ФИО (нижняя часть)
+        lower_mapping = {
+            'A75': persons.get('client_tech_supervision', {}).get('name'),
+            'A78': persons.get('general_contractor', {}).get('name'),
+            'A81': persons.get('contractor_tech_supervision', {}).get('name'),
+            'A84': persons.get('author_supervision', {}).get('name'),
+            'A87': persons.get('work_executor', {}).get('name'),
+            'A90': persons.get('others', {}).get('name')
+        }
+        
+        for coord, value in lower_mapping.items():
+            if value:
+                self._write_to_cell(sheet, coord, value)
+        
+        # Регулировка высоты строк
+        self._adjust_row_heights(sheet)
+
+    def _write_to_cell(self, sheet, coord, value):
+        """Безопасная запись в ячейку"""
+        cell = sheet[coord]
+        if not isinstance(cell, openpyxl.cell.cell.MergedCell):
+            cell.value = value
+            return True
+        return False
+
+    def _adjust_row_heights(self, worksheet):
+        """Автоподбор высоты строк"""
+        for row in worksheet.iter_rows():
+            max_lines = 1
+            for cell in row:
+                if cell.value and isinstance(cell.value, str):
+                    max_lines = max(max_lines, cell.value.count('\n') + 1)
+            
+            if max_lines > 1:
+                worksheet.row_dimensions[row[0].row].height = 15 * max_lines
+
+    def _format_project_info(self, row):
+        """Форматирование информации о проекте"""
+        project_num = self.file_manager.safe_get(row, 10, '')
+        project_sheet = self.file_manager.safe_get(row, 11, '')
+        
+        parts = []
+        if project_num: parts.append(f"№ {project_num}")
+        if project_sheet: parts.append(f"лист {project_sheet}")
+        
+        return "\n".join(parts) if parts else None
+
+    def _format_attachments(self, row):
+        """Форматирование приложений"""
+        schemes = self.file_manager.safe_get(row, 9, '')
+        materials = self.file_manager.safe_get(row, 8, '')
+        
+        parts = []
+        if schemes: parts.append(str(schemes))
+        if materials and materials != 'Не использовались':
+            parts.append(f"Сертификаты к материалам: {materials}")
+        
+        return "\n".join(parts) if parts else None
+
+    def _format_person_details(self, data, include_address=False):
+        """Форматирование данных о лице"""
+        if not data or not data.get('name'):
+            return None
+            
+        parts = []
+        if data.get('position'): parts.append(data['position'])
+        if data.get('organization'): parts.append(data['organization'])
+        if include_address and data.get('address'): parts.append(data['address'])
+        
+        details = []
+        if data.get('order'): details.append(f"Приказ: {data['order']}")
+        if data.get('nrs'): details.append(f"НРС: {data['nrs']}")
+        
+        result = ', '.join(filter(None, parts))
+        if details:
+            result += f" ({'; '.join(details)})"
+        
+        return result if result.strip() else None
+

@@ -1,10 +1,10 @@
-from datetime import datetime
+import os
+import time
 from pathlib import Path
 import openpyxl
-import time
-from copy import copy
 from openpyxl.utils import get_column_letter
-from config import OUTPUT_DIR, CERTIFICATE_EXTENSIONS
+from copy import copy
+from datetime import datetime
 
 class FileManager:
     @staticmethod
@@ -32,11 +32,11 @@ class FileManager:
                 time.sleep(1)
 
     @staticmethod
-    def create_akt_folder(akt_num):
+    def create_akt_folder(akt_num, base_dir):
         """Создает папку для акта"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         folder_name = f"Акт_{akt_num}_{timestamp}"
-        folder_path = OUTPUT_DIR / folder_name
+        folder_path = base_dir / folder_name
         folder_path.mkdir(parents=True, exist_ok=True)
         return folder_path
 
@@ -60,4 +60,4 @@ class FileManager:
     @staticmethod
     def validate_certificate(filepath):
         """Проверка формата сертификата"""
-        return filepath.suffix.lower() in CERTIFICATE_EXTENSIONS
+        return filepath.suffix.lower() in ('.pdf', '.jpg', '.jpeg', '.png')

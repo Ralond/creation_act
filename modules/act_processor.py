@@ -1,14 +1,91 @@
-import os
-from datetime import datetime
 import openpyxl
 from openpyxl.utils import get_column_letter
 from copy import copy
+from pathlib import Path
+from datetime import datetime
 from modules.file_manager import FileManager
-from config import DEFAULT_TEMPLATE, DEFAULT_SOURCE, DEFAULT_REGISTER
 
 class ActProcessor:
     def __init__(self):
         self.file_manager = FileManager()
+        self.organizations = {}
+        self.personnel = {}
+        self.normatives = {}
+        self.certificates = {}
+
+    def load_source_data(self, register_path):
+        """Загрузка всех данных из реестра АОСР"""
+        wb = self.file_manager.load_workbook_safe(register_path)
+        
+        # Загрузка организаций
+        org_sheet = wb['Организации']
+        for row in org_sheet.iter_rows(min_row=2, values_only=True):
+            if row[0]:  # Проверяем, что есть ID организации
+                self.organizations[row[0]] = {
+                    'type': row[1],
+                    'name': row[2],
+                    'ogrn': row[3],
+                    'inn': row[4],
+                    'address': row[5],
+                    'phone': row[6],
+                    'sro': row[7]
+                }
+        
+        # Загрузка персоналий
+        pers_sheet = wb['Персоналии']
+        for row in pers_sheet.iter_rows(min_row=2, values_only=True):
+            if row[0]:  # Проверяем, что есть ID персоналии
+                self.personnel[row[0]] = {
+                    'name': row[1],
+                    'position': row[2],
+                    'organization': row[3],
+                    'role': row[4],
+                    'phone': row[5],
+                    'nrs': row[6],
+                    'order': row[7],
+                    'active_from': row[8]
+                }
+        
+        # Загрузка нормативов
+        norms_sheet = wb['Нормативы']
+        for row in norms_sheet.iter_rows(min_row=2, values_only=True):
+            if row[0]:  # Проверяем, что есть код норматива
+                self.normatives[row[0]] = {
+                    'name': row[1],
+                    'type': row[2],
+                    'full_name': row[3],
+                    'status': row[4]
+                }
+        
+        # Загрузка сертификатов
+        cert_sheet = wb['Сертификаты']
+        for row in cert_sheet.iter_rows(min_row=2, values_only=True):
+            if row[0]:  # Проверяем, что есть ID сертификата
+                self.certificates[row[0]] = {
+                    'material': row[1],
+                    'cert_number': row[2],
+                    'full_info': row[3],
+                    'manufacturer': row[4]
+                }
+        
+        wb.close()
+
+    def process_register(self, register_path):
+        """Обработка реестра актов"""
+        self.load_source_data(register_path)
+        
+        wb = self.file_manager.load_workbook_safe(register_path)
+        sheet = wb['Реестр актов']
+        
+        valid_rows = []
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            if self.validate_row(row):
+                valid_rows.append(row)
+            elif any(cell is not None for cell in row):
+                break  # Прекращаем при первой частично заполненной строке
+                
+        wb.close()
+        return valid_rows
 
     def validate_row(self, row):
         """Проверка валидности строки реестра"""
@@ -21,92 +98,60 @@ class ActProcessor:
         if len(row) < 7:
             return False
         
-        if not (row[1] and row[6] and isinstance(row[6], datetime)):
+        if not (row[0] and row[5] and isinstance(row[5], datetime)):
             return False
         
         return True
 
-    def process_register(self, register_path):
-        """Обработка реестра актов"""
-        wb = self.file_manager.load_workbook_safe(register_path)
-        sheet = wb['Реестр']
-        
-        valid_rows = []
-        for row in sheet.iter_rows(min_row=2, values_only=True):
-            if self.validate_row(row):
-                valid_rows.append(row)
-            elif any(cell is not None for cell in row):
-                break  # Прекращаем при первой частично заполненной строке
-                
-        wb.close()
-        return valid_rows
-
-    def generate_akt(self, row, template_path, source_path, output_dir):
-        """Генерация одного акта с полной логикой"""
-        akt_num = f"{self.file_manager.safe_get(row, 0, '')}{self.file_manager.safe_get(row, 1, '')}"
-        akt_date = self.file_manager.safe_get(row, 6)
-        
-        # Создаем папку и файл для акта
-        akt_folder = self.file_manager.create_akt_folder(akt_num)
-        akt_file = akt_folder / f"Акт_{akt_num}.xlsx"
-        
+    def generate_all_akts(self, rows, template_path, output_path):
+        """Генерация всех актов в одной книге"""
         try:
-            if not akt_date:
-                raise ValueError("Дата акта не указана")
-
-            # Загружаем необходимые данные
-            wb_source = self.file_manager.load_workbook_safe(source_path)
+            # Загружаем шаблон
             wb_template = self.file_manager.load_workbook_safe(template_path)
+            template_sheet = wb_template.active
             
-            source_sheet = wb_source['Реквизиты']
-            involved_sheet = wb_source['Причастные']
-            template_sheet = wb_template['1']
-            
-            # Создаем новую книгу для акта
+            # Создаем новую книгу для всех актов
             output_wb = openpyxl.Workbook()
-            output_wb.remove(output_wb.active)
+            output_wb.remove(output_wb.active)  # Удаляем дефолтный лист
             
-            # Создаем лист для акта
-            sheet_name = f"Акт {akt_num}"[:31]
-            new_sheet = output_wb.create_sheet(title=sheet_name)
+            success_count = 0
+            for row in rows:
+                akt_id = f"{row[0]}-{row[1]}"
+                
+                try:
+                    # Создаем новый лист для акта
+                    sheet_name = f"Акт {akt_id}"[:31]  # Ограничение длины имени листа
+                    new_sheet = output_wb.create_sheet(title=sheet_name)
+                    
+                    # Копируем шаблон
+                    self._copy_template(template_sheet, new_sheet)
+                    
+                    # Заполняем данные
+                    self._fill_akt_data(new_sheet, row)
+                    
+                    success_count += 1
+                    
+                except Exception as e:
+                    print(f"Ошибка при обработке акта {akt_id}: {str(e)}")
+                    continue
             
-            # Копируем шаблон
-            self._copy_template(template_sheet, new_sheet)
-            
-            # Получаем данные о лицах
-            persons = self._get_persons_data(involved_sheet, akt_date)
-            
-            # Заполняем основные данные
-            self._fill_main_data(new_sheet, row, persons)
-            
-            # Заполняем информацию о проекте
-            project_info = self._format_project_info(row)
-            if project_info:
-                self._write_to_cell(new_sheet, 'R52', project_info)
-            
-            # Сохраняем файл акта
-            self.file_manager.save_workbook_safe(output_wb, akt_file)
+            # Сохраняем файл со всеми актами
+            self.file_manager.save_workbook_safe(output_wb, output_path)
             
             return {
-                'folder': akt_folder,
-                'file': akt_file,
-                'akt_num': akt_num,
-                'akt_date': akt_date.strftime('%d.%m.%Y'),
+                'file': output_path,
+                'total': len(rows),
+                'success': success_count,
                 'status': 'success'
             }
             
         except Exception as e:
             return {
-                'folder': akt_folder,
-                'file': akt_file,
-                'akt_num': akt_num,
+                'file': output_path,
                 'error': str(e),
                 'status': 'error'
             }
         finally:
-            # Закрываем workbook если они были открыты
-            if 'wb_source' in locals():
-                wb_source.close()
             if 'wb_template' in locals():
                 wb_template.close()
             if 'output_wb' in locals():
@@ -145,94 +190,82 @@ class ActProcessor:
                     new_cell.protection = copy(cell.protection)
                     new_cell.alignment = copy(cell.alignment)
 
-    def _get_persons_data(self, involved_sheet, akt_date):
-        """Получение данных о причастных лицах"""
-        return {
-            'client_tech_supervision': self._get_most_recent_person(involved_sheet, akt_date, 4, 13),
-            'general_contractor': self._get_most_recent_person(involved_sheet, akt_date, 15, 24),
-            'contractor_tech_supervision': self._get_most_recent_person(involved_sheet, akt_date, 26, 35),
-            'author_supervision': self._get_most_recent_person(involved_sheet, akt_date, 37, 46),
-            'work_executor': self._get_most_recent_person(involved_sheet, akt_date, 59, 68),
-            'others': self._get_most_recent_person(involved_sheet, akt_date, 70, 79)
-        }
+    def _fill_akt_data(self, sheet, row):
+        """Заполнение данных акта в шаблоне"""
+        # Основные данные акта
+        self._write_to_cell(sheet, 'C8', f"{row[0]}-{row[1]}")  # Номер акта
+        self._write_to_cell(sheet, 'K8', row[5].day)  # День акта
+        self._write_to_cell(sheet, 'O8', row[5].month)  # Месяц акта
+        self._write_to_cell(sheet, 'S8', row[5].year)  # Год акта
+        
+        # Наименование работ
+        self._write_to_cell(sheet, 'A45', row[3])  # Наименование работ
+        
+        # Даты выполнения работ
+        start_date = row[4]  # Дата начала
+        end_date = row[5]  # Дата окончания
+        self._write_to_cell(sheet, 'K56', start_date.day if start_date else "")
+        self._write_to_cell(sheet, 'O56', start_date.month if start_date else "")
+        self._write_to_cell(sheet, 'S56', start_date.year if start_date else "")
+        self._write_to_cell(sheet, 'K57', end_date.day if end_date else "")
+        self._write_to_cell(sheet, 'O57', end_date.month if end_date else "")
+        self._write_to_cell(sheet, 'S57', end_date.year if end_date else "")
+        
+        # Проектная документация
+        self._write_to_cell(sheet, 'A49', f"Проект: {row[11]}, Лист: {row[12]}")  # Проект и лист
+        
+        # Материалы
+        materials = []
+        if row[8]:  # Материалы
+            materials.append(row[8])
+        if row[9]:  # Материалы вручную
+            materials.append(row[9])
+        self._write_to_cell(sheet, 'A51', "\n".join(materials))
+        
+        # Исполнительные схемы
+        if row[10]:  # Исп. схемы
+            self._write_to_cell(sheet, 'F59', row[10])
+        
+        # Нормативные документы
+        if row[13]:  # Нормативные документы
+            self._write_to_cell(sheet, 'A61', row[13])
+        
+        # Последующие работы
+        if row[7]:  # Последующие работы
+            self._write_to_cell(sheet, 'A63', row[7])
+        
+        # Заполнение информации об организациях и персонах
+        self._fill_organization_data(sheet)
+        
+        # Примечания
+        if row[14]:  # Примечания
+            self._write_to_cell(sheet, 'K65', row[14])
+        
+        # Приложения
+        attachments = []
+        if row[10]:  # Исп. схемы
+            attachments.append(f"Исполнительные схемы: {row[10]}")
+        if row[8] or row[9]:  # Материалы
+            attachments.append("Сертификаты на материалы")
+        self._write_to_cell(sheet, 'A68', "\n".join(attachments))
 
-    def _get_most_recent_person(self, sheet, akt_date, start_row, end_row):
-        """Поиск актуальных данных на дату акта"""
-        most_recent_data = {}
-        most_recent_date = None
+    def _fill_organization_data(self, sheet):
+        """Заполнение данных об организациях и персонах"""
+        # Пример заполнения данных заказчика
+        customer_org = next((org for org in self.organizations.values() if org['type'] == 'Заказчик'), None)
+        if customer_org:
+            self._write_to_cell(sheet, 'A11', customer_org['name'])
+            self._write_to_cell(sheet, 'A12', f"ОГРН: {customer_org['ogrn']}, ИНН: {customer_org['inn']}")
+            self._write_to_cell(sheet, 'A13', f"Адрес: {customer_org['address']}, Тел.: {customer_org['phone']}")
         
-        for row_num in range(start_row, end_row + 1):
-            try:
-                order_date = sheet.cell(row=row_num, column=1).value
-                if not order_date or not isinstance(order_date, datetime):
-                    continue
-                    
-                if order_date <= akt_date:
-                    if most_recent_date is None or order_date > most_recent_date:
-                        most_recent_data = {
-                            'name': sheet.cell(row=row_num, column=6).value,
-                            'position': sheet.cell(row=row_num, column=2).value,
-                            'organization': sheet.cell(row=row_num, column=3).value,
-                            'order': sheet.cell(row=row_num, column=4).value,
-                            'nrs': sheet.cell(row=row_num, column=5).value,
-                            'address': sheet.cell(row=row_num, column=7).value
-                        }
-                        most_recent_date = order_date
-            except Exception:
-                continue
-        
-        return most_recent_data
-
-    def _fill_main_data(self, sheet, row, persons):
-        """Заполнение основных данных акта"""
-        # Основные данные
-        mapping = {
-            'B26': f"{self.file_manager.safe_get(row, 0, '')}{self.file_manager.safe_get(row, 1, '')}",
-            'AB26': self.file_manager.safe_get(row, 6),
-            'A50': self.file_manager.safe_get(row, 2, ''),
-            'M61': self.file_manager.safe_get(row, 4, ''),
-            'M62': self.file_manager.safe_get(row, 5, ''),
-            'A67': self.file_manager.safe_get(row, 7, ''),
-            'A56': self.file_manager.safe_get(row, 8, ''),
-            'A59': self.file_manager.safe_get(row, 9, ''),
-            'G70': self.file_manager.safe_get(row, 13, ''),
-            'J69': self.file_manager.safe_get(row, 14, ''),
-            'A72': self._format_attachments(row)
-        }
-        
-        for coord, value in mapping.items():
-            self._write_to_cell(sheet, coord, value)
-        
-        # Данные о лицах (верхняя часть)
-        upper_mapping = {
-            'A28': self._format_person_details(persons.get('client_tech_supervision', {}), True),
-            'A31': self._format_person_details(persons.get('general_contractor', {})),
-            'A34': self._format_person_details(persons.get('contractor_tech_supervision', {})),
-            'A37': self._format_person_details(persons.get('author_supervision', {})),
-            'A40': self._format_person_details(persons.get('work_executor', {})),
-            'A43': self._format_person_details(persons.get('others', {}))
-        }
-        
-        for coord, value in upper_mapping.items():
-            if value:
-                self._write_to_cell(sheet, coord, value)
-        
-        # ФИО (нижняя часть)
-        lower_mapping = {
-            'A75': persons.get('client_tech_supervision', {}).get('name'),
-            'A78': persons.get('general_contractor', {}).get('name'),
-            'A81': persons.get('contractor_tech_supervision', {}).get('name'),
-            'A84': persons.get('author_supervision', {}).get('name'),
-            'A87': persons.get('work_executor', {}).get('name'),
-            'A90': persons.get('others', {}).get('name')
-        }
-        
-        for coord, value in lower_mapping.items():
-            if value:
-                self._write_to_cell(sheet, coord, value)
-        
-        # Регулировка высоты строк
-        self._adjust_row_heights(sheet)
+        # Заполнение данных представителей
+        customer_rep = next((p for p in self.personnel.values() if p['role'] == 'Заказчик'), None)
+        if customer_rep:
+            self._write_to_cell(sheet, 'A21', f"{customer_rep['position']}, {customer_rep['name']}")
+            self._write_to_cell(sheet, 'A22', f"НРС: {customer_rep['nrs']}, Приказ: {customer_rep['order']}")
+            self._write_to_cell(sheet, 'A72', customer_rep['name'])  # Подпись
+            
+        # Аналогично заполняем данные для других ролей
 
     def _write_to_cell(self, sheet, coord, value):
         """Безопасная запись в ячейку"""
@@ -241,57 +274,3 @@ class ActProcessor:
             cell.value = value
             return True
         return False
-
-    def _adjust_row_heights(self, worksheet):
-        """Автоподбор высоты строк"""
-        for row in worksheet.iter_rows():
-            max_lines = 1
-            for cell in row:
-                if cell.value and isinstance(cell.value, str):
-                    max_lines = max(max_lines, cell.value.count('\n') + 1)
-            
-            if max_lines > 1:
-                worksheet.row_dimensions[row[0].row].height = 15 * max_lines
-
-    def _format_project_info(self, row):
-        """Форматирование информации о проекте"""
-        project_num = self.file_manager.safe_get(row, 10, '')
-        project_sheet = self.file_manager.safe_get(row, 11, '')
-        
-        parts = []
-        if project_num: parts.append(f"№ {project_num}")
-        if project_sheet: parts.append(f"лист {project_sheet}")
-        
-        return "\n".join(parts) if parts else None
-
-    def _format_attachments(self, row):
-        """Форматирование приложений"""
-        schemes = self.file_manager.safe_get(row, 9, '')
-        materials = self.file_manager.safe_get(row, 8, '')
-        
-        parts = []
-        if schemes: parts.append(str(schemes))
-        if materials and materials != 'Не использовались':
-            parts.append(f"Сертификаты к материалам: {materials}")
-        
-        return "\n".join(parts) if parts else None
-
-    def _format_person_details(self, data, include_address=False):
-        """Форматирование данных о лице"""
-        if not data or not data.get('name'):
-            return None
-            
-        parts = []
-        if data.get('position'): parts.append(data['position'])
-        if data.get('organization'): parts.append(data['organization'])
-        if include_address and data.get('address'): parts.append(data['address'])
-        
-        details = []
-        if data.get('order'): details.append(f"Приказ: {data['order']}")
-        if data.get('nrs'): details.append(f"НРС: {data['nrs']}")
-        
-        result = ', '.join(filter(None, parts))
-        if details:
-            result += f" ({'; '.join(details)})"
-        
-        return result if result.strip() else None
